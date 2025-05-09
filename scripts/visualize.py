@@ -4,7 +4,13 @@ import numpy as np
 from PIL import Image
 
 from models.quanta_vit import QuantaVisionTransformer
+import sys
+import os
 
+# Add the project root to sys.path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 def visualize():
     parser = argparse.ArgumentParser(description="Quanta-RT 模型可视化脚本")
     parser.add_argument('--model_path', type=str, default='quanta_rt_model.pt', help='模型文件路径')
