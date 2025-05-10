@@ -16,7 +16,6 @@ def prepare_tinyimagenet(data_dir='./data'):
     """
     # 确保data_dir目录存在
     data_dir = Path(data_dir)
-    data_dir.mkdir(exist_ok=True)
     
     zip_path = data_dir / 'tiny-imagenet-200.zip'
     extract_path = data_dir
