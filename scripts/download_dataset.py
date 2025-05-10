@@ -31,7 +31,7 @@ def download_data(dataset_name, data_dir):
     elif dataset_name == 'tinyimagenet':
         # TinyImageNet 数据集处理
         train_dir = os.path.join(data_dir, 'tiny-imagenet-200', 'train')
-        val_dir = os.path.join(data_dir, 'tiny-imagenet-200', 'test')
+        val_dir = os.path.join(data_dir, 'tiny-imagenet-200', 'val')
         
         # 检查目录是否存在
         if not os.path.exists(train_dir):
