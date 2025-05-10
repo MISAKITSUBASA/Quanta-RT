@@ -1,5 +1,8 @@
 import sys
 import os
+import time
+from tqdm import tqdm
+import datetime
 
 # Add the project root to sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -15,6 +18,15 @@ import argparse
 from models.quanta_vit import QuantaVisionTransformer
 from scripts.download_dataset import download_data
 from torchvision import transforms
+
+# 尝试导入logger模块（如果存在）
+try:
+    from utils.logger import setup_logger
+    logger = setup_logger(__name__)
+except ImportError:
+    import logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
 
 def train():
     parser = argparse.ArgumentParser(description="Quanta-RT 模型训练脚本")
@@ -117,40 +129,150 @@ def train():
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
 
+    # 初始化训练参数
+    start_time = time.time()
+    best_acc = 0.0
+    history = {
+        'train_loss': [],
+        'val_acc': [],
+        'epoch_times': []
+    }
+
+    # 如果有剪枝或量化，记录相关指标
+    if args.prune_ratio > 0.0 or args.quant_bits > 0:
+        history['token_keep_ratio'] = []
+        history['bitwidth_avg'] = []
+
+    print("\n" + "="*50)
+    print(f"开始训练 Quanta-RT 模型 ({args.dataset.upper()})")
+    print(f"设备: {device}")
+    print(f"批次大小: {args.batch_size}, 学习率: {args.learning_rate}")
+    print(f"训练集大小: {len(train_set)}, 验证集大小: {len(test_set)}")
+    if args.prune_ratio > 0.0:
+        print(f"Token 剪枝保留比例: {args.prune_ratio}")
+    if args.quant_bits > 0:
+        print(f"量化位宽: {args.quant_bits} 位")
+    print("="*50 + "\n")
+
     # 训练循环
     for epoch in range(args.epochs):
+        epoch_start = time.time()
         model.train()
         running_loss = 0.0
-        for images, labels in train_loader:
+        
+        # 使用tqdm创建进度条
+        train_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]", 
+                         leave=False, ncols=100)
+        
+        batch_count = 0
+        for images, labels in train_bar:
+            batch_count += 1
             images = images.to(device)
             labels = labels.to(device)
+            
             # 前向传播
             outputs = model(images)
             loss = criterion(outputs, labels)
+            
             # 反向传播和优化
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            
+            # 更新进度条
             running_loss += loss.item()
+            train_bar.set_postfix({
+                'loss': f"{loss.item():.4f}",
+                'avg_loss': f"{running_loss/batch_count:.4f}"
+            })
+        
+        # 计算平均训练损失
         avg_loss = running_loss / len(train_loader)
-        print(f"Epoch {epoch+1}/{args.epochs}, Loss: {avg_loss:.4f}")
+        history['train_loss'].append(avg_loss)
+        
         # 验证模型在测试集上的性能
         model.eval()
         correct = 0
         total = 0
+        val_bar = tqdm(test_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Valid]", 
+                      leave=False, ncols=100)
+        
         with torch.no_grad():
-            for images, labels in test_loader:
+            for images, labels in val_bar:
                 images = images.to(device)
                 labels = labels.to(device)
                 outputs = model(images)
                 _, predicted = torch.max(outputs, 1)
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
+                
+                # 更新验证进度条
+                current_acc = 100.0 * correct / total
+                val_bar.set_postfix({'acc': f"{current_acc:.2f}%"})
+        
+        # 计算验证准确率
         acc = 100.0 * correct / total if total > 0 else 0.0
-        print(f"Validation Accuracy: {acc:.2f}%")
-    # 保存训练好的模型
+        history['val_acc'].append(acc)
+        
+        # 记录剪枝和量化指标（如果有）
+        prune_info = ""
+        quant_info = ""
+        if hasattr(model, 'get_keep_ratio') and args.prune_ratio > 0.0:
+            keep_ratio = model.get_keep_ratio()
+            history['token_keep_ratio'].append(keep_ratio)
+            prune_info = f", 保留比例: {keep_ratio:.2f}"
+            
+        if hasattr(model, 'get_avg_bitwidth') and args.quant_bits > 0:
+            avg_bits = model.get_avg_bitwidth()
+            history['bitwidth_avg'].append(avg_bits)
+            quant_info = f", 平均位宽: {avg_bits:.2f}"
+        
+        # 记录每个epoch的耗时
+        epoch_time = time.time() - epoch_start
+        history['epoch_times'].append(epoch_time)
+        
+        # 更新最佳模型
+        is_best = acc > best_acc
+        if is_best:
+            best_acc = acc
+            torch.save(model.state_dict(), "quanta_rt_best.pt")
+        
+        # 打印本轮结果
+        print(f"Epoch {epoch+1}/{args.epochs} - 耗时: {epoch_time:.1f}秒")
+        print(f"  训练损失: {avg_loss:.4f}, 验证准确率: {acc:.2f}%{prune_info}{quant_info}")
+        if is_best:
+            print(f"  【新的最佳模型】验证准确率: {acc:.2f}%")
+            
+        # 每5个epoch或训练结束时保存检查点
+        if (epoch + 1) % 5 == 0 or epoch == args.epochs - 1:
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_acc': best_acc,
+                'history': history
+            }
+            torch.save(checkpoint, f"checkpoint_epoch{epoch+1}.pt")
+            print(f"  保存检查点: checkpoint_epoch{epoch+1}.pt")
+            
+    # 计算总训练时间
+    total_time = time.time() - start_time
+    hours, remainder = divmod(total_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    print("\n" + "="*50)
+    print(f"训练完成！总耗时: {int(hours)}小时 {int(minutes)}分 {seconds:.1f}秒")
+    print(f"最佳验证准确率: {best_acc:.2f}%")
+    print(f"最终验证准确率: {acc:.2f}%")
+    
+    # 保存最终模型
     torch.save(model, "quanta_rt_model.pt")
-    print("模型已保存至 quanta_rt_model.pt")
+    print("最终模型已保存至 quanta_rt_model.pt")
+    print("最佳模型已保存至 quanta_rt_best.pt")
+    print("="*50)
+    
+    # 返回训练历史记录（可用于分析和可视化）
+    return history
 
 if __name__ == "__main__":
     train()
