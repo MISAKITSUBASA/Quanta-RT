@@ -1,5 +1,6 @@
 import os
 from torchvision import datasets, transforms
+import glob
 
 def download_data(dataset_name, data_dir):
     """
@@ -84,6 +85,42 @@ def download_data(dataset_name, data_dir):
             print("请确保您已下载并解压 Tiny ImageNet 数据集，并且 --data_dir 参数指向正确的父目录。")
             return None, None
         
+        # 诊断目录结构问题
+        print(f"[DEBUG] 诊断训练目录结构: {train_dir}")
+        # 检查一些子目录
+        subdirs = [d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))]
+        if not subdirs:
+            print(f"错误: 训练目录 {train_dir} 不包含任何子目录!")
+            return None, None
+        
+        print(f"[DEBUG] 找到 {len(subdirs)} 个类别子目录")
+        # 检查前5个子目录的内容
+        for i, subdir in enumerate(subdirs[:5]):
+            subdir_path = os.path.join(train_dir, subdir)
+            files = glob.glob(os.path.join(subdir_path, "**/*.*"), recursive=True)
+            valid_exts = ['.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.tif', '.tiff', '.webp']
+            valid_files = [f for f in files if os.path.splitext(f)[1].lower() in valid_exts]
+            print(f"[DEBUG] 类别 {subdir}: 共 {len(files)} 个文件, 其中 {len(valid_files)} 个有效图像")
+            if not valid_files and i == 0:  # 只显示第一个空子目录的详细内容
+                print(f"[DEBUG] 子目录 {subdir} 内容: {os.listdir(subdir_path)[:10]} ...")
+        
+        # 检查图像放置位置是否有问题 (图像应该直接放在类别子目录下或者特定模式的子子目录下)
+        problem_subdirs = []
+        for subdir in subdirs[:20]:  # 只检查前20个子目录，避免输出过多
+            subdir_path = os.path.join(train_dir, subdir)
+            # 检查是否存在images子目录 (Tiny ImageNet官方格式)
+            images_subdir = os.path.join(subdir_path, 'images')
+            if os.path.isdir(images_subdir):
+                print(f"[DEBUG] 检测到 '{subdir}/images/' 子目录，这可能是Tiny ImageNet原始格式")
+                problem_subdirs.append(subdir)
+        
+        if problem_subdirs:
+            print("[WARN] 检测到以下类别文件夹内有 'images' 子目录，可能需要调整结构适应ImageFolder:")
+            print(", ".join(problem_subdirs))
+            print("[WARN] 建议执行以下调整命令:")
+            print("cd [数据目录] && for cls in */; do if [ -d \"$cls/images\" ]; then mv \"$cls/images\"/* \"$cls/\"; fi; done")
+        
+        # 尝试加载数据集
         train_set = None
         try:
             transform = transforms.ToTensor() 
@@ -91,7 +128,60 @@ def download_data(dataset_name, data_dir):
             print(f"[DEBUG] 成功加载训练集，共 {len(train_set)} 样本")
         except Exception as e:
             print(f"错误: 加载 Tiny ImageNet 训练集失败: {e}")
-            return None, None
+            
+            # 额外尝试：如果检测到images子目录问题，尝试自动修复
+            if problem_subdirs and "Found no valid file" in str(e):
+                print("[DEBUG] 尝试自动修复目录结构...")
+                
+                # 创建临时修复目录
+                fixed_train_dir = train_dir + "_fixed"
+                if not os.path.exists(fixed_train_dir):
+                    os.makedirs(fixed_train_dir)
+                
+                # 复制并修复目录结构
+                import shutil
+                fixed_any = False
+                for subdir in subdirs:
+                    src_dir = os.path.join(train_dir, subdir)
+                    dst_dir = os.path.join(fixed_train_dir, subdir)
+                    if not os.path.exists(dst_dir):
+                        os.makedirs(dst_dir)
+                    
+                    # 如果有images子目录，从那里复制
+                    images_dir = os.path.join(src_dir, 'images')
+                    if os.path.isdir(images_dir):
+                        image_files = []
+                        for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPEG']:  # 支持的扩展名
+                            image_files.extend(glob.glob(os.path.join(images_dir, ext)))
+                        
+                        if image_files:
+                            fixed_any = True
+                            for img in image_files:
+                                shutil.copy2(img, dst_dir)
+                            print(f"[DEBUG] 修复类别 {subdir}: 从images子目录复制了 {len(image_files)} 个文件")
+                    else:
+                        # 否则，直接从类别根目录复制
+                        image_files = []
+                        for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPEG']:
+                            image_files.extend(glob.glob(os.path.join(src_dir, ext)))
+                        
+                        if image_files:
+                            for img in image_files:
+                                shutil.copy2(img, dst_dir)
+                
+                # 如果成功修复了任何目录，尝试加载修复后的数据集
+                if fixed_any:
+                    print(f"[DEBUG] 尝试从修复的目录加载: {fixed_train_dir}")
+                    try:
+                        train_set = datasets.ImageFolder(root=fixed_train_dir, transform=transform)
+                        print(f"[SUCCESS] 从修复的目录成功加载训练集，共 {len(train_set)} 样本")
+                        # 更新训练目录为修复后的目录
+                        train_dir = fixed_train_dir
+                    except Exception as e2:
+                        print(f"[ERROR] 修复后仍然无法加载训练集: {e2}")
+            
+            if train_set is None:
+                return None, None
 
         test_set = None
         if val_dir is None:
