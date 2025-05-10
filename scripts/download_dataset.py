@@ -41,38 +41,69 @@ def download_data(dataset_name, data_dir):
     elif dataset_name_lower == 'tinyimagenet':
         print("[DEBUG] Matched 'tinyimagenet'")
         
-        train_dir = os.path.join(abs_data_dir, 'tinyimagenet', 'train')
-        val_processed_dir = os.path.join(abs_data_dir, 'tinyimagenet', 'val')
-
-        print(f"[DEBUG] Expected Tiny ImageNet train_dir: {train_dir}")
-        print(f"[DEBUG] Expected Tiny ImageNet val_processed_dir (for test_set): {val_processed_dir}")
-
-        if not os.path.exists(train_dir):
-            print(f"错误: Tiny ImageNet 训练数据目录未找到: {train_dir}")
-            print(f"请确保 tiny-imagenet-200/train 存在于 '{abs_data_dir}' 下。")
-            print("并且 --data_dir 参数指向 'tiny-imagenet-200' 的父目录。")
+        # 尝试多种可能的路径格式
+        possible_paths = [
+            # 标准官方路径结构
+            os.path.join(abs_data_dir, 'tiny-imagenet-200', 'train'),
+            # 自定义路径结构（如之前尝试的）
+            os.path.join(abs_data_dir, 'tinyimagenet', 'train'),
+            # 如果直接将train和val放在data_dir下
+            os.path.join(abs_data_dir, 'train'),
+        ]
+        
+        train_dir = None
+        # 查找存在的训练目录
+        for path in possible_paths:
+            print(f"[DEBUG] 检查训练目录是否存在: {path}")
+            if os.path.exists(path):
+                train_dir = path
+                print(f"[DEBUG] 找到有效的训练目录: {train_dir}")
+                break
+        
+        # 类似地，尝试多种可能的验证集路径
+        possible_val_paths = [
+            os.path.join(abs_data_dir, 'tiny-imagenet-200', 'val'),
+            os.path.join(abs_data_dir, 'tiny-imagenet-200', 'val_processed'),
+            os.path.join(abs_data_dir, 'tinyimagenet', 'val'),
+            os.path.join(abs_data_dir, 'val'),
+        ]
+        
+        val_dir = None
+        # 查找存在的验证目录
+        for path in possible_val_paths:
+            print(f"[DEBUG] 检查验证目录是否存在: {path}")
+            if os.path.exists(path):
+                val_dir = path
+                print(f"[DEBUG] 找到有效的验证目录: {val_dir}")
+                break
+        
+        # 如果没有找到训练目录
+        if train_dir is None:
+            paths_str = "\n - ".join(possible_paths)
+            print(f"错误: 无法找到 Tiny ImageNet 训练目录。已检查以下路径:\n - {paths_str}")
+            print("请确保您已下载并解压 Tiny ImageNet 数据集，并且 --data_dir 参数指向正确的父目录。")
             return None, None
         
         train_set = None
         try:
             transform = transforms.ToTensor() 
             train_set = datasets.ImageFolder(root=train_dir, transform=transform)
-            print(f"[DEBUG] Successfully loaded train_set from {train_dir}. Size: {len(train_set)}")
+            print(f"[DEBUG] 成功加载训练集，共 {len(train_set)} 样本")
         except Exception as e:
-            print(f"错误: 加载 Tiny ImageNet 训练集失败从 '{train_dir}': {e}")
+            print(f"错误: 加载 Tiny ImageNet 训练集失败: {e}")
             return None, None
 
         test_set = None
-        if not os.path.exists(val_processed_dir):
-            print(f"警告: Tiny ImageNet 处理后的验证数据目录 {val_processed_dir} 未找到。")
-            print("测试集将为 None。如果需要验证/测试，请确保已运行预处理脚本并将验证图像分类。")
+        if val_dir is None:
+            print(f"警告: 未找到 Tiny ImageNet 验证目录。测试集将为 None。")
         else:
             try:
                 transform = transforms.ToTensor()
-                test_set = datasets.ImageFolder(root=val_processed_dir, transform=transform)
-                print(f"[DEBUG] Successfully loaded test_set from {val_processed_dir}. Size: {len(test_set)}")
+                test_set = datasets.ImageFolder(root=val_dir, transform=transform)
+                print(f"[DEBUG] 成功加载验证集，共 {len(test_set)} 样本")
             except Exception as e:
-                print(f"错误: 加载 Tiny ImageNet 验证集 (作为测试集) 失败从 '{val_processed_dir}': {e}")
+                print(f"错误: 加载 Tiny ImageNet 验证集失败: {e}")
+                # 验证集加载失败不阻止训练，但会输出警告
 
         if train_set is None:
              print("错误: Tiny ImageNet 训练集最终未能加载。")
